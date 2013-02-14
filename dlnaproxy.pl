@@ -8,7 +8,7 @@ use AnyEvent::Handle;
 use AnyEvent::Handle::UDP;
 use AnyEvent::Socket;
 use AnyEvent::Log;
-use IO::Interface ':flags';
+use IO::Interface::Simple;
 use IO::Socket::Multicast;
 
 use YAML;
@@ -26,10 +26,7 @@ our %LISTENER;
 # Get list of IP multicast capable network interfaces
 #
 sub interfacelist {
-  my $s = IO::Socket::Multicast->new;
-  grep { $s->if_flags($_) & IFF_MULTICAST() }
-  grep { $s->if_flags($_) & IFF_RUNNING() }
-  grep $s->if_addr($_), $s->if_list;
+  grep $_->address, grep $_->is_multicast, IO::Interface::Simple->interfaces
 }
 
 my $sa_un_zero = eval { Socket::pack_sockaddr_un "" }; $sa_un_zero ^= $sa_un_zero;
@@ -68,8 +65,8 @@ sub ssdpsock {
 
   my $server; $server = AnyEvent::Handle::UDP->new(
     fh => $sock,
-    #on_recv => receive_multicast_packet($sock),
-    on_recv => sub {},
+    on_recv => receive_multicast_packet($sock),
+    #on_recv => sub {},
   );
 
   AE::log debug => "Created handler for multicast socket $GROUP:$PORT";
@@ -84,12 +81,14 @@ sub receive_multicast_packet {
   return sub {
     my ($message, $handle, $client_addr) = @_;
     my ($service, $host) = unpack_sockaddr $client_addr;
-    #AE::log info => "Multicast packet received from $host:$service\n";
-    AE::log trace => "Multicast packet received";
+    $host = inet_ntoa($host);
+    #AE::log info => "Multicast packet host length: " . length($host);
+    AE::log info => "Multicast packet received from $host:$service\n";
+    #AE::log trace => "Multicast packet received";
     AE::log trace => $message;
     # Take action depending on packet content
     if ( $message =~ /M-SEARCH/ ) {
-      distribute_discover_packet($handle, $sock, $message);
+      distribute_discover_packet($handle, $sock, $message, $host);
     } elsif ( $message =~ /LOCATION:/i ) {
       receive_location_packet($handle, $sock, $message);
     } else {
@@ -113,10 +112,11 @@ MX: 3
 # Send a discover packet to all interfaces
 #
 sub distribute_discover_packet {
-  my($handle, $sock, $message) = @_;
+  my($handle, $sock, $message, $sender) = @_;
 
   for my $if ( interfacelist ) {
     # XXX: Make sure to not send to same interface where packet was received
+    next if same_subnet($sender, $if->address, $if->netmask);
     $sock->mcast_if($if);
     $sock->mcast_send($message, $GROUP .':'. $PORT);
     AE::log trace =>  "M-SEARCH packet sent on $if\n";
@@ -285,5 +285,5 @@ sub client_connection {
 #my $listener = client_connection(8192);
 ssdpsock();
 #my $listener = client_connection();
-my $listener = client_connection("LOCATION: http://127.0.0.1:49152/description.xml");
+#my $listener = client_connection("LOCATION: http://127.0.0.1:49152/description.xml");
 AnyEvent->condvar->recv;
