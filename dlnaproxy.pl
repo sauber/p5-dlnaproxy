@@ -63,6 +63,7 @@ sub ssdpsock {
   $sock->mcast_loopback(0);
   AE::log info => "Created multicast socket on $GROUP:$PORT";
 
+  # XXX: After the first on_recv, tcp_server listener no longer executes
   my $server; $server = AnyEvent::Handle::UDP->new(
     fh => $sock,
     on_recv => receive_multicast_packet($sock),
@@ -70,7 +71,9 @@ sub ssdpsock {
   );
 
   AE::log debug => "Created handler for multicast socket $GROUP:$PORT";
+  # This send seems to be causing a block
   #$server->push_send( generate_discover_packet(), [ $GROUP => $PORT ] );
+  #$sock->mcast_send( generate_discover_packet(), $GROUP .':'. $PORT );
 }
 
 # Generate callback handler for multicast packets
@@ -94,6 +97,7 @@ sub receive_multicast_packet {
     } else {
       AE::log debug => "Unknown packet\n:$message";
     }
+    #AE::log debug => Dump \%LISTENER;
   }
 }
 
@@ -115,7 +119,7 @@ sub distribute_discover_packet {
   my($handle, $sock, $message, $sender) = @_;
 
   for my $if ( interfacelist ) {
-    # XXX: Make sure to not send to same interface where packet was received
+    # Make sure to not send to same interface where packet was received
     next if same_subnet($sender, $if->address, $if->netmask);
     $sock->mcast_if($if);
     $sock->mcast_send($message, $GROUP .':'. $PORT);
@@ -172,8 +176,8 @@ sub distribute_location_packet {
   my $listenport = $listener->{listenport};
   for my $if ( interfacelist ) {
     my $ifaddress = $if->address;
+    # Don't send on same subnet as packet originate from
     next if same_subnet($ifaddress, $address, $if->netmask);
-    # XXX: TODO Don't send if on same subnet as packet originate from
     my $newmessage = $message;
     $newmessage =~ s,(LOCATION.*http:)//([0-9a-z.]+)[:]*([0-9]*)/,$1//$ifaddress:$listenport/,i;
     $sock->mcast_if($if);
@@ -274,6 +278,7 @@ sub client_connection {
     my ($fh, $thishost, $thisport) = @_;
     AE::log info => "New listener for $serverhost:$serverport bound to $thishost, port $thisport, fh $fh.";
     $LISTENER{"$serverhost:$serverport"}{listenport} = $thisport;
+    $LISTENER{"$serverhost:$serverport"}{fh} = $fh;
     AE::log debug => Dump \%LISTENER;
     #distribute_location_packet($message, $sock);
   };
@@ -283,7 +288,7 @@ sub client_connection {
 }
 
 #my $listener = client_connection(8192);
-ssdpsock();
 #my $listener = client_connection();
 #my $listener = client_connection("LOCATION: http://127.0.0.1:49152/description.xml");
+ssdpsock();
 AnyEvent->condvar->recv;
