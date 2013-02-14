@@ -8,7 +8,7 @@ use AnyEvent::Handle;
 use AnyEvent::Handle::UDP;
 use AnyEvent::Socket;
 use AnyEvent::Log;
-use IO::Interface::Simple;
+use IO::Interface ':flags';
 use IO::Socket::Multicast;
 
 use YAML;
@@ -26,7 +26,10 @@ our %LISTENER;
 # Get list of IP multicast capable network interfaces
 #
 sub interfacelist {
-  grep $_->address, grep $_->is_multicast, IO::Interface::Simple->interfaces
+  my $s = IO::Socket::Multicast->new;
+  grep { $s->if_flags($_) & IFF_MULTICAST() }
+  grep { $s->if_flags($_) & IFF_RUNNING() }
+  grep $s->if_addr($_), $s->if_list;
 }
 
 my $sa_un_zero = eval { Socket::pack_sockaddr_un "" }; $sa_un_zero ^= $sa_un_zero;
@@ -283,5 +286,4 @@ sub client_connection {
 ssdpsock();
 #my $listener = client_connection();
 my $listener = client_connection("LOCATION: http://127.0.0.1:49152/description.xml");
-
 AnyEvent->condvar->recv;
