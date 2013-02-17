@@ -291,4 +291,8 @@ sub client_connection {
 #my $listener = client_connection();
 #my $listener = client_connection("LOCATION: http://127.0.0.1:49152/description.xml");
 ssdpsock();
+
+my $w = AnyEvent->timer (after => 2, interval => 2, cb => sub {
+  AE::log debug => "Alive";
+} );
 AnyEvent->condvar->recv;
