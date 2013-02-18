@@ -10,9 +10,11 @@ use AnyEvent::Socket;
 use AnyEvent::Log;
 use IO::Interface::Simple;
 use IO::Socket::Multicast;
+use threads;
+use threads::shared;
 
 use YAML;
-$AnyEvent::Log::FILTER->level("trace");
+$AnyEvent::Log::FILTER->level("info");
 use AnyEvent::Debug;
 our $SHELL = AnyEvent::Debug::shell "127.1", "1357";
 
@@ -21,7 +23,7 @@ our $PORT  = '1900';
 
 # Every known DLNA server has listener on seperate ports
 #
-our %LISTENER;
+our %LISTENER :shared;
 
 # Get list of IP multicast capable network interfaces
 #
@@ -98,6 +100,7 @@ sub receive_multicast_packet {
       AE::log debug => "Unknown packet\n:$message";
     }
     #AE::log debug => Dump \%LISTENER;
+    threads->yield();
   }
 }
 
@@ -145,13 +148,15 @@ sub receive_location_packet {
   AE::log trace => "Location from server $address:$port cache $timeout";
   if ( $LISTENER{"$address:$port"} ) {
     # Send message to all interface using rewritten local port
-    AE::log trace => "Reuse listener for server $address:$port";
+    my $listenport = $LISTENER{"$address:$port"}{listenport};
+    AE::log trace => "Reuse listener on $listenport for server $address:$port";
     distribute_location_packet($message, $sock);
   } else {
     # There is no listener yet. Create one and distribute messages
     AE::log trace => "Create listener for server $address:$port";
     #$LISTENER{"$address:$port"} = client_connection($message, $sock);
-    client_connection($message, $sock);
+    #client_connection($message, $sock);
+    async { client_connection($message, $sock); };
   }
   #my $listener = setup_listener($address, $port, $timeout);
   #my $local_port = $listener->{port};
@@ -236,6 +241,7 @@ sub client_connection {
   my($message, $sock) = @_;
 
   my($serverhost,$serverport) = extract_location($message);
+  my $key = "$serverhost:$serverport";
   my $guard; $guard = tcp_server undef, undef, sub {
     my($fh, $host, $port) = @_;
     AE::log info => "Client connect from $host, port $port, fh $fh.";
@@ -276,12 +282,23 @@ sub client_connection {
     );
   }, sub {
     my ($fh, $thishost, $thisport) = @_;
+    #share($thisport);
+    #share($fh);
     AE::log info => "New listener for $serverhost:$serverport bound to $thishost, port $thisport, fh $fh.";
+    unless ( $LISTENER{$key} ) {
+      my %hash :shared;
+      $LISTENER{"$serverhost:$serverport"} = \%hash;
+    }
     $LISTENER{"$serverhost:$serverport"}{listenport} = $thisport;
     $LISTENER{"$serverhost:$serverport"}{fh} = $fh;
     AE::log debug => Dump \%LISTENER;
     #distribute_location_packet($message, $sock);
   };
+  unless ( $LISTENER{$key} ) {
+    my %hash :shared;
+    $LISTENER{"$serverhost:$serverport"} = \%hash;
+  }
+  share($guard);
   $LISTENER{"$serverhost:$serverport"}{guard} = $guard;
   AE::log debug => Dump \%LISTENER;
   return $guard;
