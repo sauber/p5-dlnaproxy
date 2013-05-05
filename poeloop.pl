@@ -2,50 +2,6 @@
 
 ########################################################################
 ###
-### TCP Client
-###
-########################################################################
-
-# A more full fledged implementation on
-# http://cpansearch.perl.org/src/ANDYPUR/POE-Component-Proxy-TCP-1.2/lib/POE/Component/Proxy/TCP.pm
-# but it doesn't support deferring deciding listening port until after
-# listener is started on any random port
-
-package DP::Connection;
-
-use Moose;
-use MooseX::Method::Signatures;
-use POE qw(Component::Client::TCP);
-
-use constant _DEBUG             => 1;
-
-has client         => ( is=>'ro', isa=>'Ref',      required=>1 );
-has remote_address => ( is=>'ro', isa=>'Str',      required=>1 );
-has remote_port    => ( is=>'ro', isa=>'Int',      required=>1 );
-has _remote         => ( is=>'ro', isa=>'POE::Component::Client::TCP', lazy_build=>1 );
-method _build__remote {
-  POE::Component::Client::TCP->new(
-    RemoteAddress => $self->{remote_address},
-    RemotePort    => $self->{remote_port},
-    Connected     => sub {
-      warn "*** Connected to $self->{remote_address}:$self->{remote_port} for client\n" if _DEBUG;
-    },
-    ServerInput => sub {},
-    InlineStates => {             
-      # Send data to the server.
-      send_server => sub {
-        my ( $heap, $message ) = @_[ HEAP, ARG0 ];
-        $heap->{server}->put($message);
-      },
-    },
-  );
-}
-
-
-__PACKAGE__->meta->make_immutable;
-
-########################################################################
-###
 ### TCP Proxy Server
 ###
 ########################################################################
@@ -62,7 +18,7 @@ BEGIN { require 'sub_x.pm' };
 
 use Moose;
 use MooseX::Method::Signatures;
-use POE qw(Component::Server::TCP);
+use POE qw(Component::Server::TCP Wheel::ReadWrite);
 use Socket 'unpack_sockaddr_in';
 
 use constant _DEBUG => 1;
@@ -75,7 +31,7 @@ has remote_server_port     => ( is=>'ro', isa=>'Int',     required=>1 );
 has proxy_listener_started => ( is=>'ro', isa=>'CodeRef', required=>1 );
 
 # After we know the callback of where to send port number to
-#has proxy_listener_port   => ( is=>'rw', isa=>'Int',                  );
+has proxy_listener_port   => ( is=>'rw', isa=>'Int',                  );
 #has message        => ( is=>'ro', isa=>'Str',      required=>1 );
 #has ssdp           => ( is=>'ro', isa=>'DP::SSDP', required=>1 );
 
@@ -88,15 +44,12 @@ method BUILD {
     #ClientInput     => sub { $self->_remote_client_read( $_[HEAP], $_[ARG0] ) },
     #ClientConnected => sub { $self->_remote_client_connection(  $_[HEAP]           ) },
 
-    ClientInput     => sub {
-      my($heap, $message) = @_[HEAP, ARG0];
-      my $size = length $message;
-      warn "*** Got $size bytes from client\n";
-    },
-
-    Started         => sub {
+    # The listener is now up and running and port is identified
+    #
+    Started => sub {
       my ($proxy_listener_port, $proxy_listener_addr) =
         unpack_sockaddr_in( $_[HEAP]{listener}->getsockname );
+      $self->proxy_listener_port( $proxy_listener_port );
       warn sprintf
         "*** listener started on port %s for remote server %s:%s\n",
         $proxy_listener_port,
@@ -109,6 +62,23 @@ method BUILD {
       #$callback->($proxy_listener_port);
     },
 
+    # Data arrived from client. Send to Server.
+    #
+    ClientInput => sub {
+      my($kernel, $heap, $message) = @_[KERNEL, HEAP, ARG0];
+      my $size = length $message;
+      warn "*** Got $size bytes from client heap $heap\n";
+      $heap->{remote_server} ||= $self->_proxy_client_create( $heap->{client} );
+      #x remote_server => $heap->{remote_server};
+      $kernel->post($heap->{remote_server}, '_remote_server_send', $message);
+    },
+
+    ClientDisconnected => sub {
+      my($kernel, $session, $heap) = @_[KERNEL, SESSION, HEAP];
+      warn "*** client has disconnected, shutting down server connection\n";
+      $kernel->post($heap->{remove_server}, 'shutdown');
+    },
+
     #InlineStates    => {
     #  _remote_client_send => sub {
     #    my ( $heap, $message ) = @_[ HEAP, ARG0 ];
@@ -118,6 +88,57 @@ method BUILD {
     #  },
     #},
   );
+}
+
+method _proxy_client_create ( Ref $remote_client ) {
+  warn "Creating proxy client for remote client $remote_client\n";
+  POE::Component::Client::TCP->new(
+    RemoteAddress => $self->remote_server_address,
+    RemotePort    => $self->remote_server_port,
+
+    Connected => sub {
+      my ( $kernel, $heap ) = @_[ KERNEL, HEAP ];
+      warn sprintf "*** connected to %s:%s\n",
+        $self->remote_server_address, $self->remote_server_port;
+      # Flush buffer of messages while connecting
+      while ( my $message = shift @{ $heap->{buffer} } ) {
+        warn "*** Flushing buffer $message\n";
+        $heap->{server}->put( $message );
+      }
+      delete $heap->{buffer};
+    },
+
+    ServerInput   => sub {
+      # Got data form server, send to client
+      my ( $kernel, $heap, $message ) = @_[ KERNEL, HEAP, ARG0 ];
+      my $size = length $message;
+      warn "*** Received $size bytes from server heap $heap\n";
+      warn $message;
+      $remote_client->put( $message );
+    },
+
+    InlineStates => {
+      # Data to be sent to server from client.
+      #
+      _remote_server_send => sub {
+        my ( $heap, $message ) = @_[ HEAP, ARG0 ];
+        #x heap => $heap;
+        if ( $heap->{connected} ) {
+          warn "*** sending to server: $message\n";
+          $heap->{server}->put($message);
+        } else {
+          # Buffer up because not yet connected
+          warn "*** buffer to server: $message\n";
+          push @{ $heap->{buffer} }, $message;
+        }
+      },
+    },
+
+    Disconnected => sub {
+      warn "*** Server disconnected\n";
+      $remote_client->shutdown;
+    },
+  )
 }
 
 # When a listening port is known, publish it
@@ -218,7 +239,7 @@ use constant _DATAGRAM_MAXLEN   => 1024;
 use constant _MCAST_GROUP       => '239.255.255.250';
 use constant _MCAST_PORT        => 1900;
 use constant _MCAST_DESTINATION => _MCAST_GROUP . ':' . _MCAST_PORT;
-use constant _DISCOVER_INTERVAL => 1800;
+use constant _DISCOVER_INTERVAL => 30; # 1800;
 use constant _DISCOVER_PACKET   => 
 'M-SEARCH * HTTP/1.1
 Host: ' . _MCAST_DESTINATION . '
@@ -332,7 +353,7 @@ sub _read_location {
 
   if ( $self->_proxy->{$dest} ) {
     warn "***   already known\n";
-    $self->send_location( $message, $self->_proxy->{$dest}->bind_port );
+    $self->send_location( $message, $self->_proxy->{$dest}->proxy_listener_port );
     # XXX refresh timeout
   } else {
     $self->_proxy->{$dest} = DP::Proxy->new(
@@ -365,8 +386,6 @@ method send_location ( Str $message, Int $listenport ) {
   }
 }
 
-
-
 sub _start {
   my($self, $kernel) = @_[OBJECT, KERNEL];
 
@@ -382,7 +401,7 @@ sub _start {
   warn "*** $self session ended _start\n" if _DEBUG;
 }
 
-method run {
+method BUILD {
   $self->_session;
 
   POE::Kernel->run();
@@ -390,4 +409,4 @@ method run {
 
 __PACKAGE__->meta->make_immutable;
 
-DP::SSDP->new->run;
+DP::SSDP->new;
