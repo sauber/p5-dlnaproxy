@@ -1,0 +1,4 @@
+#!perl
+
+use App::DLNAProxy;
+App::DLNAProxy->new;

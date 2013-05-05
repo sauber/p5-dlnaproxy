@@ -1,0 +1,17 @@
+DLNAProxy TODO List
+  This is a partial "wish-list" of features to add and things to do.
+
+  Remove remote server when cache timeout expires
+
+  Packaging
+
+  Debug to syslog.
+
+  Run as daemon
+
+  Remove Moose.
+    Or at least MooseX::Method::Signatures.
+
+  Refresh interface list
+
+  Command line options
