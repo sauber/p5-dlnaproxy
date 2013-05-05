@@ -1,10 +1,6 @@
 DLNAProxy TODO List
   This is a partial "wish-list" of features to add and things to do.
 
-  Remove remote server when cache timeout expires
-
-  Packaging
-
   Debug to syslog.
 
   Run as daemon
@@ -15,3 +11,9 @@ DLNAProxy TODO List
   Refresh interface list
 
   Command line options
+
+  Don't filter by line in wheels
+
+  Specify permanent known remote servers
+
+  Handle connect error

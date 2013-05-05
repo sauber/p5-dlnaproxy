@@ -16,7 +16,7 @@ use Data::Dumper;
 # 6 - Debug
 # 7 - Dump
 #
-use constant _LEVEL => 7;
+use constant _LEVEL => 5;
 
 # STDOUT | STDERR | SYSLOG
 #
@@ -101,7 +101,8 @@ has remote_server_port     => ( is=>'ro', isa=>'Int',     required=>1 );
 has proxy_listener_started => ( is=>'ro', isa=>'CodeRef', required=>1 );
 
 # After we know the callback of where to send port number to
-has proxy_listener_port   => ( is=>'rw', isa=>'Int',                  );
+has proxy_listener_port   => ( is=>'rw', isa=>'Int' );
+has proxy_session         => ( is=>'rw', isa=>'Int' );
 
 # Logging shortcut
 #
@@ -119,6 +120,7 @@ method BUILD {
       my ($proxy_listener_port, $proxy_listener_addr) =
         unpack_sockaddr_in( $_[HEAP]{listener}->getsockname );
       $self->proxy_listener_port( $proxy_listener_port );
+      $self->proxy_session( $_[SESSION]->ID );
       x info =>
         "listener started on port %s for remote server %s:%s",
         $proxy_listener_port,
@@ -230,7 +232,7 @@ use constant _DATAGRAM_MAXLEN   => 1024;
 use constant _MCAST_GROUP       => '239.255.255.250';
 use constant _MCAST_PORT        => 1900;
 use constant _MCAST_DESTINATION => _MCAST_GROUP . ':' . _MCAST_PORT;
-use constant _DISCOVER_INTERVAL => 1800; # 30;
+use constant _DISCOVER_INTERVAL => 900; # 30;
 use constant _DISCOVER_PACKET   => 
 'M-SEARCH * HTTP/1.1
 Host: ' . _MCAST_DESTINATION . '
@@ -248,7 +250,7 @@ has _session => ( is=>'ro', isa=>'POE::Session', lazy_build=>1 );
 method _build__session {
   POE::Session->create(
     object_states => [
-      $self => [ qw(_start _discover _read _read_location) ]
+      $self => [ qw(_start _discover _read _read_location _expire) ]
     ]
   ) or die $!;
 }
@@ -276,6 +278,9 @@ method _build__interfaces {
 # A list of proxy servers, one for each known DLNA server
 #
 has _proxy => ( is=>'ro', isa=>'HashRef[App::DLNAProxy::Proxy]', default=>sub{{}} );
+
+# A list of timers of when to expire, one for each proxy server
+has _timer => ( is=>'ro', isa=>'HashRef[Int]', default=>sub{{}} );
 
 # Check if two IP's are on same subnet
 #
@@ -340,24 +345,52 @@ sub _read {
 # We have received a location packet.
 #
 sub _read_location {
-  my($self, $message) = @_[OBJECT, ARG0];
+  my($self, $kernel, $message) = @_[OBJECT, KERNEL, ARG0];
 
   my($address,$port,$timeout) = _extract_location($message);
   my $dest = "$address:$port";
-  x notice => "Location from server $dest cache $timeout";
 
   if ( $self->_proxy->{$dest} ) {
-    x info => "  already known";
+    x trace => "Location from server $dest cache $timeout is known";
     $self->send_location( $message, $self->_proxy->{$dest}->proxy_listener_port );
-    # XXX refresh timeout
   } else {
     $self->_proxy->{$dest} = App::DLNAProxy::Proxy->new(
       remote_server_address => $address,
       remote_server_port    => $port,
-      proxy_listener_started => sub { $self->send_location( $message, @_ ) },
+      proxy_listener_started => sub {
+        x notice =>
+          "DLNA server on %s:%i. Created proxy on port %i.",
+          $address, $port, @_;
+        $self->send_location( $message, @_ )
+      },
     );
-    x info => "   created new listener";
+    x trace => "Location from server $dest cache $timeout is new";
   }
+  $self->_timer->{$dest} = time() + int $timeout;
+  $self->_reset_expire_timer( $kernel );
+}
+
+# Set timer to the one that expires first
+#
+method _reset_expire_timer ( Ref $kernel ) {
+  my($alarmtime) = sort { $a <=> $b } values %{ $self->_timer };
+  return unless defined $alarmtime;
+  x notice => "Next alarm at %02i:%02i:%02i", (localtime $alarmtime)[2,1,0];
+  $kernel->alarm( _expire => $alarmtime );
+}
+
+sub _expire {
+  my($self, $kernel) = @_[OBJECT, KERNEL];
+  x trace => "Expire event";
+  while ( my($dest, $time) = each %{ $self->_timer } ) {
+    x trace => "time %f vs %f", $time, time;
+    next if $time > time;
+    $kernel->post( $self->_proxy->{$dest}->proxy_session, 'shutdown' );
+    delete $self->_timer->{$dest};
+    delete $self->_proxy->{$dest};
+    x notice => "Timeout for $dest. Proxy stopped.";
+  }
+  $self->_reset_expire_timer( $kernel );
 }
 
 # We have set up a listener for a remote location. Announce it's presence.
