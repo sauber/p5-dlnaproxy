@@ -1,5 +1,89 @@
 #!/usr/bin/env perl
 
+# TODO:
+#   Remove remote server when cache timeout expires
+#   Packaging
+#   Better debug messages
+#   Run as daemon
+#   Remove Moose
+
+
+########################################################################
+###
+### Logging
+###
+########################################################################
+
+package DP::Log;
+use Data::Dumper;
+
+# 0 - Quiet
+# 1 - Error
+# 2 - Warning
+# 3 - Notice
+# 4 - Info
+# 5 - Trace
+# 6 - Debug
+# 7 - Dump
+#
+use constant _LEVEL => 7;
+
+# STDOUT | STDERR | SYSLOG
+#
+use constant _OUTPUT => 'STDERR';
+
+sub _dump {
+  Data::Dumper->Dump([$_[1]], ["*** $_[0]"]);
+}
+
+sub log {
+  my($self, $level, @message) = @_;
+
+  #warn "level $level\n";
+  #warn "message @message\n";
+
+  # Convert to number if $level is a word
+  #
+  $level = 1 if $level =~ /~e/i;
+  $level = 2 if $level =~ /^w/i;
+  $level = 3 if $level =~ /^n/i;
+  $level = 4 if $level =~ /^i/i;
+  $level = 5 if $level =~ /^t/i;
+  $level = 6 if $level =~ /^de/i;
+  $level = 7 if $level =~ /^du/i;
+  $level = 0 if $level =~ /^\D/i;
+
+  return if $level > _LEVEL;
+
+  # Format the output as Dump, sprintf or string
+  #
+  my $output;
+  if ( $level == $7 ) {
+    $output = _dump(@message);
+  } elsif ( @message > 1 ) {
+    #warn sprintf "There are %i strings so using sprintf", scalar @message;
+    $output = sprintf shift @message, @message;
+    #warn "result is $output\n";
+  } else {
+    $output = shift @message;
+  }
+  
+  # Add timestamp and newline
+  #
+  my $pre = sprintf "*** %02i:%02i:%02i: ", (localtime)[2,1,0];
+  my $nl = "\n" unless $message =~ /(\\x0D\\x0A?|\\x0A\\x0D?)$/;
+
+  # Send output to destination
+  #
+  if ( _OUTPUT eq 'STDOUT' ) {
+    print $pre . $output . $nl;
+  } elsif ( _OUTPUT eq 'STDERR' ) {
+    warn $pre . $output . $nl;
+  } elsif ( _OUTPUT eq 'SYSLOG' ) {
+  }
+}
+
+
 ########################################################################
 ###
 ### TCP Proxy Server
@@ -14,7 +98,7 @@
 
 package DP::Proxy;
 
-BEGIN { require 'sub_x.pm' };
+#BEGIN { require 'sub_x.pm' };
 
 use Moose;
 use MooseX::Method::Signatures;
@@ -33,11 +117,15 @@ has proxy_listener_started => ( is=>'ro', isa=>'CodeRef', required=>1 );
 # After we know the callback of where to send port number to
 has proxy_listener_port   => ( is=>'rw', isa=>'Int',                  );
 
+# Logging shortcut
+#
+sub x { DP::Log->log(@_) }
+
 # A listener to accept incoming connections
 #
 method BUILD {
 
-  warn "*** Building a listener\n" if _DEBUG;
+  x trace => "Building a listener";
   POE::Component::Server::TCP->new(
     # The listener is now up and running and port is identified
     #
@@ -45,11 +133,12 @@ method BUILD {
       my ($proxy_listener_port, $proxy_listener_addr) =
         unpack_sockaddr_in( $_[HEAP]{listener}->getsockname );
       $self->proxy_listener_port( $proxy_listener_port );
-      warn sprintf
-        "*** listener started on port %s for remote server %s:%s\n",
+      x info =>
+        "listener started on port %s for remote server %s:%s",
         $proxy_listener_port,
         $self->remote_server_address,
-        $self->remote_server_port if _DEBUG;
+        $self->remote_server_port;
+        
       $self->proxy_listener_started->($proxy_listener_port);
     },
 
@@ -57,11 +146,9 @@ method BUILD {
     #
     ClientInput => sub {
       my($kernel, $session, $heap, $message) = @_[KERNEL, SESSION, HEAP, ARG0];
-      my $size = length $message;
-      warn "*** Got $size bytes from client heap $heap\n" if _DEBUG;
-      #$heap->{remote_server} ||= $self->_proxy_client_create( $heap->{client} );
+      x debug => "%i bytes from client heap %s", length($message), $heap;
+   
       $heap->{remote_server} ||= $self->_proxy_client_create( $session->ID );
-      #x remote_server => $heap->{remote_server};
       $kernel->post($heap->{remote_server}, 'remote_server_send', $message);
     },
 
@@ -69,21 +156,17 @@ method BUILD {
     #
     ClientDisconnected => sub {
       my($kernel, $session, $heap) = @_[KERNEL, SESSION, HEAP];
-      #$kernel->post($heap->{remove_server}, 'shutdown');
       my $session_id = $session->ID;
       my $server_session_id = $heap->{remote_server};
-      warn "*** client session $session_id has disconnected, shutting down server connection session $server_session_id\n" if _DEBUG;
+      x info => "client session $session_id has disconnected, shutting down server connection session $server_session_id";
       $kernel->post($heap->{remote_server}, 'shutdown' );
-      #$kernel->yield('shutdown');
-      #delete $heap->{client};
-      #x heap => $heap;
       delete $heap->{remote_server};
     },
 
     InlineStates => {
       remote_client_send => sub {
         my($heap, $message) = @_[HEAP, ARG0];
-        warn "*** to client: $message\n" if _DEBUG;
+        x debug => "to client: $message";
         $heap->{client}->put($message);
       },
     },
@@ -91,18 +174,17 @@ method BUILD {
 }
 
 method _proxy_client_create ( Int $remote_client_session ) {
-  warn "*** Creating proxy client for remote client $remote_client_session\n" if _DEBUG;
+  x trace => "Creating proxy client for remote client $remote_client_session\n";
   POE::Component::Client::TCP->new(
     RemoteAddress => $self->remote_server_address,
     RemotePort    => $self->remote_server_port,
 
     Connected => sub {
       my ( $kernel, $heap ) = @_[ KERNEL, HEAP ];
-      warn sprintf "*** connected to %s:%s\n",
-        $self->remote_server_address, $self->remote_server_port if _DEBUG;
+      x info => "connected to %s:%s", $self->remote_server_address, $self->remote_server_port;
       # Flush buffer of messages while connecting
       while ( my $message = shift @{ $heap->{buffer} } ) {
-        warn "*** Flushing buffer $message\n" if _DEBUG;
+        x info => "Flushing buffer $message";
         $heap->{server}->put( $message );
       }
       delete $heap->{buffer};
@@ -112,8 +194,8 @@ method _proxy_client_create ( Int $remote_client_session ) {
       # Got data form server, send to client
       my ( $kernel, $heap, $message ) = @_[ KERNEL, HEAP, ARG0 ];
       my $size = length $message;
-      warn "*** Received $size bytes from server heap $heap\n" if _DEBUG;
-      warn $message if _DEBUG;
+      x trace => "Received $size bytes from server heap $heap";
+      x debug => $message;
       # This is causing leak
       #$remote_client->put( $message );
       $kernel->post( $remote_client_session, 'remote_client_send', $message );
@@ -124,20 +206,18 @@ method _proxy_client_create ( Int $remote_client_session ) {
         my ( $heap, $message ) = @_[ HEAP, ARG0 ];
         #x heap => $heap;
         if ( $heap->{connected} ) {
-          warn "*** sending to server: $message\n" if _DEBUG;
+          x trace => "sending to server: $message";
           $heap->{server}->put($message);
         } else {
           # Buffer up because not yet connected
-          warn "*** buffer to server: $message\n" if _DEBUG;
+          x trace => "buffer to server: $message";
           push @{ $heap->{buffer} }, $message;
         }
       },
     },
 
     Disconnected => sub {
-      warn "*** Server disconnected\n" if _DEBUG;
-      #x client => $remote_client;
-      #$remote_client->shutdown;
+      x info => "Server disconnected";
       $_[KERNEL]->post( $remote_client_session, 'shutdown' );
     },
   )
@@ -174,6 +254,10 @@ ST: upnp:rootdevice
 MX: 3
 
 ';
+
+# Logging shortcut
+#
+sub x { DP::Log->log(@_) }
 
 has _session => ( is=>'ro', isa=>'POE::Session', lazy_build=>1 );
 method _build__session {
@@ -240,11 +324,11 @@ sub _discover {
     next if $sender and _same_subnet($sender, $if->address, $if->netmask);
 
     $sock->mcast_if($if)
-      or warn $!;
+      or x warn => $!;
     $sock->mcast_send(_DISCOVER_PACKET, _MCAST_DESTINATION)
-      or warn $!;
+      or x warn => $!;
 
-    warn "*** pid $$ sent discover on $if at " . time() . "\n" if _DEBUG;
+    x info => "pid $$ sent discover on $if";
   }
 
   $kernel->delay(_discover => _DISCOVER_INTERVAL); # Cancels previous timer
@@ -264,7 +348,7 @@ sub _read {
   } else {
     my ($peer_port, $peer_addr) = unpack_sockaddr_in($remote_address);
     my $human_addr = inet_ntoa($peer_addr);
-    warn "*** received unknown packet from $human_addr : $peer_port ... $message\n" if _DEBUG;
+    x notice => "received unknown packet from $human_addr : $peer_port ... $message";
   }
 }
 
@@ -275,10 +359,10 @@ sub _read_location {
 
   my($address,$port,$timeout) = _extract_location($message);
   my $dest = "$address:$port";
-  warn "*** Location from server $dest cache $timeout\n" if _DEBUG;
+  x notice => "Location from server $dest cache $timeout";
 
   if ( $self->_proxy->{$dest} ) {
-    warn "***   already known\n" if _DEBUG;
+    x info => "  already known";
     $self->send_location( $message, $self->_proxy->{$dest}->proxy_listener_port );
     # XXX refresh timeout
   } else {
@@ -287,7 +371,7 @@ sub _read_location {
       remote_server_port    => $port,
       proxy_listener_started => sub { $self->send_location( $message, @_ ) },
     );
-    warn "***   created new listener\n" if _DEBUG;
+    x info => "   created new listener";
   }
 }
 
@@ -304,14 +388,14 @@ method send_location ( Str $message, Int $listenport ) {
     $newmessage =~ s,(LOCATION.*http:)//([0-9a-z.]+)[:]*([0-9]*)/,$1//$ifaddress:$listenport/,i;
     $sock->mcast_if($if);
     $sock->mcast_send($newmessage, _MCAST_DESTINATION );
-    warn "*** LOCATION packet rewritten to $ifaddress:$listenport and sent on $if\n" if _DEBUG;
+    x info => "LOCATION packet rewritten to $ifaddress:$listenport and sent on $if";
   }
 }
 
 sub _start {
   my($self, $kernel) = @_[OBJECT, KERNEL];
 
-  warn "*** $self session called _start\n" if _DEBUG;
+  x trace => "$self session called _start";
 
   # With the session started, tell kernel to call "read" sub
   # when data arrives on socket.
@@ -320,7 +404,7 @@ sub _start {
   # Start sending out discovery packets
   $kernel->yield('_discover');
 
-  warn "*** $self session ended _start\n" if _DEBUG;
+  x trace => "$self session ended _start";
 }
 
 method BUILD {
