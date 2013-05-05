@@ -2,55 +2,202 @@
 
 ########################################################################
 ###
-### TCP Proxy
+### TCP Client
 ###
 ########################################################################
 
-package DP::PROXY;
+# A more full fledged implementation on
+# http://cpansearch.perl.org/src/ANDYPUR/POE-Component-Proxy-TCP-1.2/lib/POE/Component/Proxy/TCP.pm
+# but it doesn't support deferring deciding listening port until after
+# listener is started on any random port
+
+package DP::Connection;
+
+use Moose;
+use MooseX::Method::Signatures;
+use POE qw(Component::Client::TCP);
+
+use constant _DEBUG             => 1;
+
+has client         => ( is=>'ro', isa=>'Ref',      required=>1 );
+has remote_address => ( is=>'ro', isa=>'Str',      required=>1 );
+has remote_port    => ( is=>'ro', isa=>'Int',      required=>1 );
+has _remote         => ( is=>'ro', isa=>'POE::Component::Client::TCP', lazy_build=>1 );
+method _build__remote {
+  POE::Component::Client::TCP->new(
+    RemoteAddress => $self->{remote_address},
+    RemotePort    => $self->{remote_port},
+    Connected     => sub {
+      warn "*** Connected to $self->{remote_address}:$self->{remote_port} for client\n" if _DEBUG;
+    },
+    ServerInput => sub {},
+    InlineStates => {             
+      # Send data to the server.
+      send_server => sub {
+        my ( $heap, $message ) = @_[ HEAP, ARG0 ];
+        $heap->{server}->put($message);
+      },
+    },
+  );
+}
+
+
+__PACKAGE__->meta->make_immutable;
+
+########################################################################
+###
+### TCP Proxy Server
+###
+########################################################################
+
+# Terminology
+# _proxy_listener:                  Accept   connection from remote clients
+# _remote_client -> _proxy_server:  Incoming connection from remote client
+# _proxy_client  -> _remote_server: Outgoing connection to   remote server
+# 
+
+package DP::Proxy;
+
+BEGIN { require 'sub_x.pm' };
 
 use Moose;
 use MooseX::Method::Signatures;
 use POE qw(Component::Server::TCP);
 use Socket 'unpack_sockaddr_in';
 
-use constant _DEBUG             => 1;
+use constant _DEBUG => 1;
 
-has remote_address => ( is=>'ro', isa=>'Str',      required=>1 );
-has remote_port    => ( is=>'ro', isa=>'Int',      required=>1 );
-has bind_port      => ( is=>'rw', isa=>'Int',                  );
-has message        => ( is=>'ro', isa=>'Str',      required=>1 );
-has ssdp           => ( is=>'ro', isa=>'DP::SSDP', required=>1 );
+# Required parameters is address and port of remote server
+# and a callback sub to announce port number of listener
+#
+has remote_server_address  => ( is=>'ro', isa=>'Str',     required=>1 );
+has remote_server_port     => ( is=>'ro', isa=>'Int',     required=>1 );
+has proxy_listener_started => ( is=>'ro', isa=>'CodeRef', required=>1 );
 
-method launch {
- POE::Component::Server::TCP->new(
-    #Port => 12345,
-    ClientConnected => sub {
-      warn "*** got a connection from $_[HEAP]{remote_ip}\n" if _DEBUG;
-      $_[HEAP]{client}->put("Smile from the server!");
+# After we know the callback of where to send port number to
+#has proxy_listener_port   => ( is=>'rw', isa=>'Int',                  );
+#has message        => ( is=>'ro', isa=>'Str',      required=>1 );
+#has ssdp           => ( is=>'ro', isa=>'DP::SSDP', required=>1 );
+
+# A listener to accept incoming connections
+#
+method BUILD {
+
+  warn "*** Building a listener\n";
+  POE::Component::Server::TCP->new(
+    #ClientInput     => sub { $self->_remote_client_read( $_[HEAP], $_[ARG0] ) },
+    #ClientConnected => sub { $self->_remote_client_connection(  $_[HEAP]           ) },
+
+    ClientInput     => sub {
+      my($heap, $message) = @_[HEAP, ARG0];
+      my $size = length $message;
+      warn "*** Got $size bytes from client\n";
     },
-    ClientInput => sub {
-      my $client_input = $_[ARG0];
-      $client_input =~ tr[a-zA-Z][n-za-mN-ZA-M];
-      $_[HEAP]{client}->put($client_input);
+
+    Started         => sub {
+      my ($proxy_listener_port, $proxy_listener_addr) =
+        unpack_sockaddr_in( $_[HEAP]{listener}->getsockname );
+      warn sprintf
+        "*** listener started on port %s for remote server %s:%s\n",
+        $proxy_listener_port,
+        $self->remote_server_address,
+        $self->remote_server_port;
+      $self->proxy_listener_started->($proxy_listener_port);
+      #x 'callback', $self->proxy_listener_started;
+      #my $callback = $self->proxy_listener_started;
+      #warn "*** callback port to $callback\n";
+      #$callback->($proxy_listener_port);
     },
-    Started => sub {
-      my $listener = $_[HEAP]{listener};
-      my ($port, $addr) = unpack_sockaddr_in($listener->getsockname);
-      $self->bind_port( $port );
-      $self->_started;
-    },
+
+    #InlineStates    => {
+    #  _remote_client_send => sub {
+    #    my ( $heap, $message ) = @_[ HEAP, ARG0 ];
+    #    my $size = length $message;
+    #    warn("*** sending $size bytes to client");
+    #    $heap->{client}->put($message);
+    #  },
+    #},
   );
-  return $self;
 }
 
 # When a listening port is known, publish it
 #
-method _started {
+#method _started ( Ref $listener ) {
+#  my ($port, $addr) = unpack_sockaddr_in($listener->getsockname);
+#  $self->bind_port( $port );
+#  warn "*** $self started listener on port " . $self->bind_port . "\n"
+#    if _DEBUG;
+#  $self->ssdp->send_location( $self->message, $self->bind_port );
+#}
 
-  warn "*** $self started listener on port " . $self->bind_port . "\n"
-    if _DEBUG;
-  $self->ssdp->send_location( $self->message, $self->bind_port );
-}
+# A new client has connected. Hook it up with a server end.
+#
+#method _connection ( HashRef $heap ) {
+#  my $client = $heap->{client};
+#  warn "*** Connected client $client to $self->remote_address:$self->remote_address\n" if _DEBUG;
+#  #$heap->{proxy_client} = DP::Connection->new(
+#  #   client         => $client,
+#  #   remote_address => $self->remote_address,
+#  #   remote_port    => $self->remote_port,
+#  #);
+#}
+
+# Make a client connection component session to server
+#
+#method _create_server_connection {
+#  POE::Component::Client::TCP->new(
+#    RemoteAddress => $self->remote_address,
+#    RemotePort    => $self->remote_port,
+#    Started       => sub {
+#      my($kernel, $heap, $inner_self) = @_[ KERNEL, HEAP, ARG0];
+#      $heap->{parent_client_session} = $session_id;
+#      $heap->{self} = $inner_self;
+#      $heap->{is_connected_to_server} = 0;
+#      warn("*** started session $session_id to $inner_self->{orig_address}:$inner_self->{orig_port}");
+#    },
+#    Connected => sub {
+#      my ( $kernel, $heap) = @_[ KERNEL, HEAP];
+#      $heap->{is_connected_to_server} = 1;
+#      $heap->{parent_client_session} = $session_id;
+#      warn(sprintf "*** connected to %s:%s\n", $self->remote_address, $self->remote_port);
+#    },
+#    ServerInput => sub {
+#      my ( $kernel, $heap, $input ) = @_[ KERNEL, HEAP, ARG0 ];
+#      if (defined($input)) {
+#        dbprint(3, "Input from remote server $self->{orig_address} :",
+#                "$self->{orig_port}: -$input- sending to",
+#                "remote client and any callback");
+#        $kernel->post($heap->{parent_client_session},
+#                            "send_client", $input);
+#        $self->{data_from_server}->($input);
+#      } else {
+#        dbprint(1, "ServerInput event but no input!");
+#      }
+#    },
+#
+#
+#
+#
+#
+#  );
+#}
+#
+#method _clientinput ( HashRef $heap, Str $message ) {
+#  my $session = $heap->{
+#  warn "*** Input from heap $heap\n" if _DEBUG;
+#}
+#
+#method launch {
+#  $self->_listener
+#  return $self;
+#} 
+
+#method BUILD {
+  #$self->_proxy_listener
+#}
+
+__PACKAGE__->meta->make_immutable;
+
 
 ########################################################################
 ###
@@ -71,7 +218,7 @@ use constant _DATAGRAM_MAXLEN   => 1024;
 use constant _MCAST_GROUP       => '239.255.255.250';
 use constant _MCAST_PORT        => 1900;
 use constant _MCAST_DESTINATION => _MCAST_GROUP . ':' . _MCAST_PORT;
-use constant _DISCOVER_INTERVAL => 10;
+use constant _DISCOVER_INTERVAL => 1800;
 use constant _DISCOVER_PACKET   => 
 'M-SEARCH * HTTP/1.1
 Host: ' . _MCAST_DESTINATION . '
@@ -112,7 +259,7 @@ method _build__interfaces {
 
 # A list of proxy servers, one for each known DLNA server
 #
-has _proxy => ( is=>'ro', isa=>'HashRef[DP::PROXY]', default=>sub{{}} );
+has _proxy => ( is=>'ro', isa=>'HashRef[DP::Proxy]', default=>sub{{}} );
 
 # Check if two IP's are on same subnet
 #
@@ -188,12 +335,15 @@ sub _read_location {
     $self->send_location( $message, $self->_proxy->{$dest}->bind_port );
     # XXX refresh timeout
   } else {
-    $self->_proxy->{$dest} = DP::PROXY->new(
-      remote_address => $address,
-      remote_port    => $port,
-      ssdp           => $self,
-      message        => $message,
-    )->launch;
+    $self->_proxy->{$dest} = DP::Proxy->new(
+      remote_server_address => $address,
+      remote_server_port    => $port,
+      #ssdp           => $self,
+      #message        => $message,
+      #started        => sub { $self->send_location( $message ) },
+      proxy_listener_started => sub { $self->send_location( $message, @_ ) },
+      #proxy_listener_started => sub { warn sprintf "Called back with %s\n", join ',', @_, $message },
+    );
     warn "***   created new listener\n";
   }
 }
