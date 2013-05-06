@@ -16,7 +16,7 @@ use Data::Dumper;
 # 6 - Debug
 # 7 - Dump
 #
-use constant _LEVEL => 4;
+use constant _LEVEL => 6;
 
 # STDOUT | STDERR | SYSLOG
 #
@@ -230,7 +230,7 @@ package App::DLNAProxy;
 
 use Moose;
 use MooseX::Method::Signatures;
-use POE;
+use POE qw(Wheel::UDP Filter::Stream);
 use IO::Socket::Multicast;
 use IO::Interface::Simple;
 
@@ -256,7 +256,7 @@ has _session => ( is=>'ro', isa=>'POE::Session', lazy_build=>1 );
 method _build__session {
   POE::Session->create(
     object_states => [
-      $self => [ qw(_start _discover _read _read_location _expire) ]
+      $self => [ qw(_start _discover _read _read_location _expire_proxy) ]
     ]
   ) or die $!;
 }
@@ -286,7 +286,12 @@ method _build__interfaces {
 has _proxy => ( is=>'ro', isa=>'HashRef[App::DLNAProxy::Proxy]', default=>sub{{}} );
 
 # A list of timers of when to expire, one for each proxy server
+#
 has _timer => ( is=>'ro', isa=>'HashRef[Int]', default=>sub{{}} );
+
+# A list of remote clients current doing discovery
+#
+has _discover_client => ( is=>'ro', isa=>'HashRef', default=>sub{{}} );
 
 # Check if two IP's are on same subnet
 #
@@ -353,17 +358,23 @@ sub _discover {
 }
 
 sub _read {
-  my ($kernel, $socket) = @_[KERNEL, ARG0];
+  my ($self, $kernel, $socket) = @_[OBJECT, KERNEL, ARG0];
 
   my $remote_address = recv($socket, my $message = "", _DATAGRAM_MAXLEN, 0);
   die $! unless defined $remote_address;
   my ($peer_port, $peer_addr) = unpack_sockaddr_in($remote_address);
   my $human_addr = inet_ntoa($peer_addr);
-  #x debug => $message;
+  x debug => $message;
 
   # Take action depending on packet content
   if ( $message =~ /M-SEARCH/i ) {
-    x trace => "Discover packet from $human_addr:$peer_port";
+    x info => "Discover packet from $human_addr:$peer_port";
+    # Remember that client is discovering
+    $self->_discover_client->{"$human_addr:$peer_port"} = {
+      since   => time,
+      address => $human_addr,
+      port    => $peer_port,
+    };
     $kernel->yield('_discover', $human_addr, $message);
   } elsif ( $message =~ /LOCATION:/i ) {
     x trace => "Announcement packet from $human_addr:$peer_port";
@@ -395,6 +406,21 @@ sub _read_location {
     }
   }
 
+  # Are there any client waiting for location?
+  #
+  for my $name ( keys %{ $self->_discover_client } ) {
+    my $client = $self->_discover_client->{$name};
+    if ( $client->{since} + 60 < time ) {
+      # More than a min ago - probably no longer interested
+      delete $self->_discover_client->{$name};
+      x trace => "Expired $name as interested in location packets";
+      next;
+    }
+    $self->_remote_client_send_location($client, $message);
+
+
+  }
+
   # Got announcement for something where proxy is already set up
   #
   if ( $self->_proxy->{$dest} ) {
@@ -420,19 +446,63 @@ sub _read_location {
   $self->_reset_expire_timer( $kernel );
 }
 
+# Send a location message directly to a client
+#
+method _remote_client_send_location ( Ref $client, Str $message ) {
+
+  x debug => "client $client->{address}:$client->{port} is expecting message";
+  # Find out which proxy server to replace with in message
+  my($address,$port,$timeout) = _extract_location($message);
+  x debug => "message original location is $address:$port";
+  my $proxyport;
+  if ( $self->_proxy->{"$address:$port"} ) {
+    $proxyport = $self->_proxy->{"$address:$port"}->proxy_listener_port;
+    x debug => "proxyport for message is $proxyport";
+  } else {
+    x debug => "there is no proxyport for message";
+    return;
+  }
+
+  # Find out which interface to refer client to
+  my $ifaddress;
+  for my $if ( $self->_interfaces ) {
+    $ifaddress = $if->address;
+    #x debug => "Compare $remote_address, $ifaddress";
+    next unless _same_subnet($client->{address}, $ifaddress, $if->netmask);
+    $message =~ s,(LOCATION.*http:)//([0-9a-z.]+)[:]*([0-9]*)/,$1//$ifaddress:$proxyport/,i;
+    x info => "location packet rewritten to $ifaddress:$proxyport for client $client->{address}:$client->{port}";
+    last;
+  }
+
+  POE::Session->create(
+    inline_states => {
+      _start => sub {
+        my $wheel =  POE::Wheel::UDP->new(
+          PeerAddr => $client->{address},
+          PeerPort => $client->{port},
+          LocalAddr => $ifaddress,
+          LocalPort => 1900,
+          Filter   => POE::Filter::Stream->new,
+        );
+        $wheel->put( { payload => [ $message ] } );
+      },
+    }
+  );
+  x trace => "Location package sent to $client->{address}:$client->{port}";
+}
+
 # Set timer to the one that expires first
 #
 method _reset_expire_timer ( Ref $kernel ) {
   my($alarmtime) = sort { $a <=> $b } values %{ $self->_timer };
   return unless defined $alarmtime;
 
-  # Verify if alarm is already set correctly
-
-  x info => "Next alarm at %02i:%02i:%02i", (localtime $alarmtime)[2,1,0];
-  $kernel->alarm( _expire => $alarmtime );
+  # XXX: Don't reset if alarm is already set correctly
+  $kernel->alarm( _expire_proxy => $alarmtime );
+  x info => "Next expire alarm at %02i:%02i:%02i", (localtime $alarmtime)[2,1,0];
 }
 
-sub _expire {
+sub _expire_proxy {
   my($self, $kernel) = @_[OBJECT, KERNEL];
   x trace => "Expire event";
   while ( my($dest, $time) = each %{ $self->_timer } ) {
