@@ -292,7 +292,12 @@ sub _same_subnet {
   #  ? $_
   #  : inet_aton((unpack_sockaddr_in($_))[1])
   #} @_;
-  my($ip1,$ip2,$mask) = @_;
+  #my($ip1,$ip2,$mask) = @_;
+  my($ip1,$ip2,$mask) = map {
+    /^\d+\.\d+\.\d+\.\d+/
+    ? inet_aton($_)
+    : $_
+  } @_;
 
   #x dump => samesubnetraw => \@_;
   #x dump => samesubnetdec => [ $ip1,$ip2,$mask ];
@@ -423,6 +428,7 @@ method send_location ( Str $message, Int $listenport ) {
   my $sock = $self->_socket;
   for my $if ( $self->_interfaces ) {
     my $ifaddress = $if->address;
+    #x debug => "Compare $remote_address, $ifaddress";
     next if _same_subnet($remote_address, $ifaddress, $if->netmask);
     my $newmessage = $message;
     $newmessage =~ s,(LOCATION.*http:)//([0-9a-z.]+)[:]*([0-9]*)/,$1//$ifaddress:$listenport/,i;
