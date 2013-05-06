@@ -16,7 +16,7 @@ use Data::Dumper;
 # 6 - Debug
 # 7 - Dump
 #
-use constant _LEVEL => 5;
+use constant _LEVEL => 7;
 
 # STDOUT | STDERR | SYSLOG
 #
@@ -34,21 +34,23 @@ sub log {
 
   # Convert to number if $level is a word
   #
-  $level = 1 if $level =~ /~e/i;
+  $level = 1 if $level =~ /^e/i;
   $level = 2 if $level =~ /^w/i;
   $level = 3 if $level =~ /^n/i;
   $level = 4 if $level =~ /^i/i;
   $level = 5 if $level =~ /^t/i;
   $level = 6 if $level =~ /^de/i;
   $level = 7 if $level =~ /^du/i;
-  $level = 0 if $level =~ /^\D/i;
+  $level = 0 if $level =~ /^\D/;
 
   return if $level > _LEVEL;
+  #warn "level $level\n";
 
   # Format the output as Dump, sprintf or string
   #
   my $output;
-  if ( $level == $7 ) {
+  if ( $level == 7 ) {
+    #warn "formating log as dumper\n";
     $output = _dump(@message);
   } elsif ( @message > 1 ) {
     #warn sprintf "There are %i strings so using sprintf", scalar @message;
@@ -228,7 +230,7 @@ use POE;
 use IO::Socket::Multicast;
 use IO::Interface::Simple;
 
-use constant _DATAGRAM_MAXLEN   => 1024;
+use constant _DATAGRAM_MAXLEN   => 8192; # 1024
 use constant _MCAST_GROUP       => '239.255.255.250';
 use constant _MCAST_PORT        => 1900;
 use constant _MCAST_DESTINATION => _MCAST_GROUP . ':' . _MCAST_PORT;
@@ -285,8 +287,19 @@ has _timer => ( is=>'ro', isa=>'HashRef[Int]', default=>sub{{}} );
 # Check if two IP's are on same subnet
 #
 sub _same_subnet {
-  my($ip1,$ip2,$mask) = map inet_aton($_), @_;
+  #my($ip1,$ip2,$mask) = map {
+  #  /^\d+\.\d+\.\d+\.\d+/
+  #  ? $_
+  #  : inet_aton((unpack_sockaddr_in($_))[1])
+  #} @_;
+  my($ip1,$ip2,$mask) = @_;
 
+  #x dump => samesubnetraw => \@_;
+  #x dump => samesubnetdec => [ $ip1,$ip2,$mask ];
+  unless ( $ip1 and $ip2 and $mask ) {
+    x error => "Invalid subnet comparison: $ip1/$ip2/$mask";
+    die caller();
+  }
   ( $ip1 & $mask ) eq
   ( $ip2 & $mask )
 }
@@ -311,11 +324,17 @@ sub _discover {
   my $sock = $self->_socket;
   for my $if ( $self->_interfaces ) {
     # Make sure to not send to same interface where packet was received
+    #x dump => sender => $sender;
+    #x dump => address => $if->address;
+    #x dump => netmask => $if->netmask;
+    #x dump => message => $message;
     next if $sender and _same_subnet($sender, $if->address, $if->netmask);
+
+    $message ||= _DISCOVER_PACKET;
 
     $sock->mcast_if($if)
       or x warn => $!;
-    $sock->mcast_send(_DISCOVER_PACKET, _MCAST_DESTINATION)
+    $sock->mcast_send($message, _MCAST_DESTINATION)
       or x warn => $!;
 
     x info => "pid $$ sent discover on $if";
@@ -329,16 +348,19 @@ sub _read {
 
   my $remote_address = recv($socket, my $message = "", _DATAGRAM_MAXLEN, 0);
   die $! unless defined $remote_address;
+  my ($peer_port, $peer_addr) = unpack_sockaddr_in($remote_address);
+  my $human_addr = inet_ntoa($peer_addr);
+  x debug => $message;
 
   # Take action depending on packet content
   if ( $message =~ /M-SEARCH/i ) {
-    $kernel->yield('_discover', $remote_address, $message);
+    x trace => "Discover packet from $human_addr:$peer_port";
+    $kernel->yield('_discover', $human_addr, $message);
   } elsif ( $message =~ /LOCATION:/i ) {
+    x trace => "Announcement packet from $human_addr:$peer_port";
     $kernel->yield('_read_location', $message);
   } else {
-    my ($peer_port, $peer_addr) = unpack_sockaddr_in($remote_address);
-    my $human_addr = inet_ntoa($peer_addr);
-    x notice => "received unknown packet from $human_addr : $peer_port ... $message";
+    x trace => "Unknown packet from $human_addr : $peer_port ... $message";
   }
 }
 
@@ -415,9 +437,12 @@ sub _start {
 
   x trace => "$self session called _start";
 
+  my $socket = $self->_socket;
+  $socket->mcast_add(_MCAST_GROUP) or die $!;
+
   # With the session started, tell kernel to call "read" sub
   # when data arrives on socket.
-  $kernel->select_read($self->_socket, '_read');
+  $kernel->select_read($socket, '_read');
 
   # Start sending out discovery packets
   $kernel->yield('_discover');

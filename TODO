@@ -17,3 +17,5 @@ DLNAProxy TODO List
   Specify permanent known remote servers
 
   Handle connect error
+
+  Notice when servers shitdown
