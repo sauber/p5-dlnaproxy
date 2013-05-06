@@ -16,7 +16,7 @@ use Data::Dumper;
 # 6 - Debug
 # 7 - Dump
 #
-use constant _LEVEL => 7;
+use constant _LEVEL => 4;
 
 # STDOUT | STDERR | SYSLOG
 #
@@ -116,6 +116,8 @@ method BUILD {
 
   x trace => "Building a listener";
   POE::Component::Server::TCP->new(
+    ClientFilter => 'POE::Filter::Stream',
+
     # The listener is now up and running and port is identified
     #
     Started => sub {
@@ -166,6 +168,7 @@ method BUILD {
 method _proxy_client_create ( Int $remote_client_session ) {
   x trace => "Creating proxy client for remote client $remote_client_session\n";
   POE::Component::Client::TCP->new(
+    Filter        => 'POE::Filter::Stream',
     RemoteAddress => $self->remote_server_address,
     RemotePort    => $self->remote_server_port,
 
@@ -173,8 +176,9 @@ method _proxy_client_create ( Int $remote_client_session ) {
       my ( $kernel, $heap ) = @_[ KERNEL, HEAP ];
       x info => "connected to %s:%s", $self->remote_server_address, $self->remote_server_port;
       # Flush buffer of messages while connecting
-      while ( my $message = shift @{ $heap->{buffer} } ) {
-        x info => "Flushing buffer $message";
+      while ( @{ $heap->{buffer} } ) {
+        my $message = shift @{ $heap->{buffer} };
+        x debug => "Flushing buffer $message";
         $heap->{server}->put( $message );
       }
       delete $heap->{buffer};
@@ -262,7 +266,7 @@ method _build__socket {
   IO::Socket::Multicast->new(
     LocalPort => _MCAST_PORT,
     ReuseAddr => 1,
-    ReusePort => 1,
+    #ReusePort => 1,
   ) or die $!;
 }
 
@@ -355,7 +359,7 @@ sub _read {
   die $! unless defined $remote_address;
   my ($peer_port, $peer_addr) = unpack_sockaddr_in($remote_address);
   my $human_addr = inet_ntoa($peer_addr);
-  x debug => $message;
+  #x debug => $message;
 
   # Take action depending on packet content
   if ( $message =~ /M-SEARCH/i ) {
@@ -377,9 +381,28 @@ sub _read_location {
   my($address,$port,$timeout) = _extract_location($message);
   my $dest = "$address:$port";
 
+  # If $address is local and $port matches that of a proxy,
+  # then we got our own announcement.
+  #
+  for my $if ( $self->_interfaces ) {
+    next unless $address eq $if->address;
+    # IP is local - check for port
+    for my $pr ( keys %{ $self->_proxy } ) {
+      if ( $self->_proxy->{$pr}->proxy_listener_port == $port ) {
+        x trace => "Received own announcement of $pr";
+        return;
+      }
+    }
+  }
+
+  # Got announcement for something where proxy is already set up
+  #
   if ( $self->_proxy->{$dest} ) {
     x trace => "Location from server $dest cache $timeout is known";
     $self->send_location( $message, $self->_proxy->{$dest}->proxy_listener_port );
+
+  # Brand new announcement. Setup up proxy server.
+  #
   } else {
     $self->_proxy->{$dest} = App::DLNAProxy::Proxy->new(
       remote_server_address => $address,
@@ -402,7 +425,10 @@ sub _read_location {
 method _reset_expire_timer ( Ref $kernel ) {
   my($alarmtime) = sort { $a <=> $b } values %{ $self->_timer };
   return unless defined $alarmtime;
-  x notice => "Next alarm at %02i:%02i:%02i", (localtime $alarmtime)[2,1,0];
+
+  # Verify if alarm is already set correctly
+
+  x info => "Next alarm at %02i:%02i:%02i", (localtime $alarmtime)[2,1,0];
   $kernel->alarm( _expire => $alarmtime );
 }
 
