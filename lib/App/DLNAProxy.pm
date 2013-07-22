@@ -92,7 +92,7 @@ package App::DLNAProxy::Proxy;
 
 use Moose;
 use MooseX::Method::Signatures;
-use POE qw(Component::Server::TCP Component::Client::TCP);
+use POE qw(Component::Server::TCP Component::Client::TCP Filter::DLNAProxy);
 use Socket 'unpack_sockaddr_in';
 
 # Required parameters is address and port of remote server
@@ -116,7 +116,7 @@ method BUILD {
 
   x trace => "Building a listener";
   POE::Component::Server::TCP->new(
-    ClientFilter => 'POE::Filter::Stream',
+    ClientFilter => 'POE::Filter::DLNAProxy',
 
     # The listener is now up and running and port is identified
     #

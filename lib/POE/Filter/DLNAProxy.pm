@@ -51,18 +51,24 @@ sub new {
 sub get_one_start {
   my ($self, $stream) = @_;
   $self->[CONTENT] .= join '', @$stream;
+
+  x trace => 'Adding content to filter';
 }
 
 sub get_one {
   my $self = shift;
 
-  return [ ];
+  return [ ] unless length $self->[CONTENT];
+  my $chunk = $self->[CONTENT];
+  $self->[CONTENT] = '';
+  x trace => 'Taking content from filter';
+  return [ $chunk ];
 }
 
 sub put {
   my ($self, $lines) = @_;
-  my @raw;
-  \@raw;
+  x trace => 'In Filter put function';
+  [ @$lines ];
 }
 
 # A copy of everything in the buffer so far
