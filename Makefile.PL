@@ -11,9 +11,11 @@ WriteMakefile(
     "IO::Socket::Multicast"       => 0,
     "Moose"                       => 0,
     "MooseX::Method::Signatures"  => 0,
+    "MooseX::Singleton"           => 0,
     "POE::Component::Client::TCP" => 0,
     "POE::Component::Server::TCP" => 0,
     "Socket"                      => 0,
+    "POE::Wheel::UDP"             => 0,
   },
   dist => { COMPRESS => 'gzip', SUFFIX => 'gz' },
 );
