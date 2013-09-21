@@ -16,7 +16,7 @@ use Data::Dumper;
 # 6 - Debug
 # 7 - Dump
 #
-use constant _LEVEL => 6;
+use constant _LEVEL => 7;
 
 # STDOUT | STDERR | SYSLOG
 #

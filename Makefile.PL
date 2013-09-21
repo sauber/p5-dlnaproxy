@@ -7,6 +7,7 @@ WriteMakefile(
   EXE_FILES   => ['bin/dlnaproxy'],
   "PREREQ_PM" => {
     "Data::Dumper"                => 0,
+    "Devel::SimpleTrace"          => 0,
     "IO::Interface::Simple"       => 0,
     "IO::Socket::Multicast"       => 0,
     "Moose"                       => 0,

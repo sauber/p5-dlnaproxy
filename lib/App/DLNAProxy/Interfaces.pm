@@ -9,6 +9,7 @@ package App::DLNAProxy::Interfaces;
 use Moose;
 use MooseX::Method::Signatures;
 use IO::Interface::Simple;
+use Socket;
 use MooseX::Singleton;
 use App::DLNAProxy::Log;
 
@@ -35,10 +36,24 @@ method all {
 # Check if an ip belongs to an interface
 #
 method belong ( Object $if, Str $ip ) {
-  $ip = inet_aton($ip) unless $ip =~ /^\d+\.\d+\.\d+\.\d+/;
+  my $ip_n = inet_aton($ip);
+  my $ifip = inet_aton($if->address);
+  my $mask = inet_aton( eval {$if->netmask} || '255.255.255.255' );
 
-  ( $ip          & $if->netmask ) eq
-  ( $if->address & $if->netmask )
+  #x debug => "testing address %s", $ip;
+  #x debug => "belong if %s address %s", $if->name, $ifip;
+  #x debug => "testing netmask";
+  #my $netmask = eval { $if->netmask } || '255.255.255.255';
+  #x debug => "belong if %s netmask %s", $if->name, $mask;
+  my $compare = ( $ip_n          & $mask ) eq
+  ( $ifip & $mask );
+  #x dump => 'ip subnet range compare', $compare;
+  if ( $compare ) {
+    x debug => 'belong test: %s is on %s', $ip, $if;
+  } else {
+    x debug => 'belong test: %s is not on %s', $ip, $if;
+  }
+  return $compare;
 }
 
 # Check if an IP can be reached directly on a interface

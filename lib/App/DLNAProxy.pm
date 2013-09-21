@@ -69,17 +69,19 @@ sub _send_discover {
 
     $message ||= _DISCOVER_PACKET;
 
-    $sock->mcast_if($if)
-      or x warn => $!;
-    $sock->mcast_send($message, _MCAST_DESTINATION)
-      or x warn => $!;
-
     if ( $sender ) {
       x info => '%s >: rediscover on %s for %s', $if->address, $if, $sender;
     } else {
       x info => '%s >: discover on %s', $if->address, $if;
     }
-  }
+    #next if $if->name eq 'lo0';
+    next if $if->name =~ /en/;
+    x debug => 'setting if to %s', $if;
+    $sock->mcast_if($if)
+      or x warn => $!;
+    $sock->mcast_send($message, _MCAST_DESTINATION)
+      or x warn => $!;
+ }
 
   # Cancel previous timer and set new
   $kernel->delay(_send_discover => _DISCOVER_INTERVAL);
@@ -90,6 +92,10 @@ sub _send_discover {
 method _send_direct ( Object $client, Object $announcement ) {
 
   my $message = $announcement->rewrite( $client );
+  x trace => '%s:1900 > %s:%s: %i bytes',
+             $client->sender_address,
+             $client->address, $client->port,
+             length $message;
   POE::Session->create(
     inline_states => {
       _start => sub {
@@ -110,7 +116,8 @@ method _send_direct ( Object $client, Object $announcement ) {
              length $message;
 }
 
-method _send_breadcast ( Object $announcement ) {
+method _send_broadcast ( Object $announcement ) {
+  x error => 'sending broadcast not implemented';
 }
 
 # We have set up a listener for a remote location. Announce it's presence.
@@ -137,7 +144,7 @@ method _send_announcement ( Object $announcement ) {
   #  $sock->mcast_send($message, _MCAST_DESTINATION );
   #}
 
-  $self->_send_breadcast( $announcement );
+  $self->_send_broadcast( $announcement );
 }
 
 # Process a location packet
