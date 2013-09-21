@@ -8,19 +8,42 @@ package App::DLNAProxy::SSDP::Servers;
 
 use Moose;
 use MooseX::Method::Signatures;
+use MooseX::Singleton;
 use App::DLNAProxy::SSDP::Server;
+use App::DLNAProxy::Log;
+
+# Logging shortcut
+#
+sub x { App::DLNAProxy::Log->log(@_) }
 
 has _servers => ( is=>'ro', isa=>'HashRef', default=>sub{{}} );
 
 # Register a new server
-#
-method add ( Str $ip, Str $port, CodeRef $callback ) {
-  my $label = "$ip:$port";
-  $self->_servers->{$label} ||=
-    App::DLNAProxy::SSDP::Server->new(
-    );
 
-  $callback->();
+# XXX: The address where announcement comes from has a port that keeps changing
+# so cannot use as identifier? Perhaps use IP without port.
+# But there might be several servers on same IP.
+# And each may have different IP for location.
+# While parsing results, there may be additional IP/port locations
+# that need proxy setup for same "server".
+#
+method add ( Object $announcement, CodeRef $callback ) {
+  x trace => 'Adding new announcement';
+  my $ip   = $announcement->location_address;
+  my $port = $announcement->location_port;
+  my $label = "$ip:$port";
+  if ( $self->_servers->{$label} ) {
+    x trace => 'Proxy exists';
+    $callback->();
+  } else {
+    x trace => 'Creating new proxy';
+    $self->_servers->{$label} =
+      App::DLNAProxy::SSDP::Server->new(
+         address  => $ip,
+         port     => $port,
+         callback => $callback,
+      );
+  }
 }
 
 # List of all waiting clients

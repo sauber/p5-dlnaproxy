@@ -15,6 +15,7 @@ use IO::Socket::Multicast;
 use App::DLNAProxy::Interfaces;
 use App::DLNAProxy::Log;
 use App::DLNAProxy::SSDP::Clients;
+use App::DLNAProxy::SSDP::Servers;
 use App::DLNAProxy::SSDP::Announcement;
 
 use constant _DATAGRAM_MAXLEN   => 8192; # 1024
@@ -55,6 +56,11 @@ method _build__interfaces { App::DLNAProxy::Interfaces->instance }
 #
 has _clients => (is=>'ro', isa=>'App::DLNAProxy::SSDP::Clients', lazy_build=>1);
 method _build__clients { App::DLNAProxy::SSDP::Clients->new }
+
+# A list of servers that have announced themselves
+#
+has _servers => (is=>'ro', isa=>'App::DLNAProxy::SSDP::Servers', lazy_build=>1);
+method _build__servers { App::DLNAProxy::SSDP::Servers->instance }
 
 # Announce to the world that we are looking for servers
 # Or reannounce messages we received
@@ -118,17 +124,7 @@ method _send_direct ( Object $client, Object $announcement ) {
 
 method _send_broadcast ( Object $announcement ) {
   x error => 'sending broadcast not implemented';
-}
 
-# We have set up a listener for a remote location. Announce it's presence.
-#
-method _send_announcement ( Object $announcement ) {
-  #my $sock = $self->_socket;
-
-  # Send first to all known client waiting for announcements
-  $self->_send_direct( $_, $announcement ) for $self->_clients->all;
-
-  # Then broadcast to rest of world
   #for my $if ( $self->_interfaces->all ) {
   #  # Don't send to interface with IP in same range as sender of packet
   #  next if $self->_interfaces->belong( $if, $announcement->sender_address );
@@ -143,18 +139,28 @@ method _send_announcement ( Object $announcement ) {
   #  $sock->mcast_if($if);
   #  $sock->mcast_send($message, _MCAST_DESTINATION );
   #}
+}
 
+# We have set up a listener for a remote location. Announce it's presence.
+#
+method _send_announcement ( Object $announcement ) {
+  #my $sock = $self->_socket;
+
+  # Send first to all known client waiting for announcements
+  $self->_send_direct( $_, $announcement ) for $self->_clients->all;
+
+  # Then broadcast to rest of world
   $self->_send_broadcast( $announcement );
 }
 
 # Process a location packet
 #
 sub _process_announcement {
-  my($self, $kernel, $message) = @_[OBJECT, KERNEL, ARG0];
+  my($self, $kernel, $announcement) = @_[OBJECT, KERNEL, ARG0];
 
   x trace => '%s:%s announcement location %s:%s',
-             $message->sender_address,   $message->sender_port,
-             $message->location_address, $message->location_port;
+             $announcement->sender_address,   $announcement->sender_port,
+             $announcement->location_address, $announcement->location_port;
 
   # If $address is local and $port matches that of a proxy,
   # then we got our own announcement.
@@ -163,10 +169,10 @@ sub _process_announcement {
   # so reannoucne on remaining interfaces.
   #
   for my $if ( $self->_interfaces->all ) {
-    next unless $message->location_address eq $if->address;
+    next unless $announcement->location_address eq $if->address;
     # IP is local - check for port
     for my $pr ( $self->_servers->proxies ) {
-      if ( $pr->port == $message->location_port ) {
+      if ( $pr->port == $announcement->location_port ) {
         x trace => "session received announcement from own proxy";
         return;
       }
@@ -175,10 +181,10 @@ sub _process_announcement {
 
   # Find out if location is on any local subnet
   # TODO: For now just resend announcement. But it seems we have to proxy.
-  if ( ! $self->_interfaces->direct($message->location_address) ) {
-    $self->_send_announcement( $message );
-    return;
-  }
+  #if ( ! $self->_interfaces->direct($message->location_address) ) {
+  #  $self->_send_announcement( $message );
+  #  return;
+  #}
 
   # TODO: If location is not on any interface, we cannot proxy it
   #       We'll have to redistribute without rewrite
@@ -192,9 +198,11 @@ sub _process_announcement {
   # When we have announcement, set up proxy server, and redistribute
   # announcement.
   #
+  my $callback =
+    sub { $self->_send_announcement( $announcement, @_ ) };
   $self->_servers->add( 
-    $message,
-    #$callback,
+    $announcement,
+    $callback,
   );
 
 
