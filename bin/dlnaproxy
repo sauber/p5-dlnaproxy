@@ -1,6 +1,4 @@
 #!/usr/bin/env perl
 
-#use Devel::SimpleTrace;
-#use Carp::Always;
 use App::DLNAProxy;
-App::DLNAProxy->new;
+App::DLNAProxy->new->start;
