@@ -9,5 +9,3 @@ plan tests => 1;
 BEGIN {
     use_ok( 'App::DLNAProxy' ) || print "Bail out!\n";
 }
-
-diag( "Testing App::DLNAProxy $App::DLNAProxy::VERSION, Perl $], $^X" );

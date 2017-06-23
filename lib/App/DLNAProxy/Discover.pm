@@ -35,21 +35,8 @@ MX: 3
 #
 sub x { App::DLNAProxy::Log->log(@_) }
 
-# Build a socket interface
-#
-has _socket => ( is=>'ro', isa=>'IO::Socket::Multicast', lazy_build=>1 );
-method _build__socket {
-  IO::Socket::Multicast->new(
-    LocalPort => _MCAST_PORT,
-    ReuseAddr => 1,
-    #ReusePort => 1,
-  ) or die $!;
-}
-
-# A list of all network interfaces capable of multicast
-#
-has _interfaces => (is=>'ro',isa=>'App::DLNAProxy::Interfaces',lazy_build=>1);
-method _build__interfaces { App::DLNAProxy::Interfaces->instance }
+has socket     => ( is=>'ro', required=>1, isa=>'IO::Socket::Multicast' );
+has interfaces => ( is=>'ro', required=>1, isa=>'App::DLNAProxy::Interfaces' );
 
 # A list of clients in discovery
 #
@@ -67,10 +54,10 @@ method _build__servers { App::DLNAProxy::SSDP::Servers->instance }
 sub _send_discover {
   my($self, $kernel, $sender, $message) = @_[OBJECT, KERNEL, ARG0, ARG1];
 
-  my $sock = $self->_socket;
-  for my $if ( $self->_interfaces->all ) {
+  my $sock = $self->socket;
+  for my $if ( $self->interfaces->all ) {
     # Don't send to interface with IP in same range as sender of packet
-    next if $sender and $self->_interfaces->belong($if, $sender);
+    next if $sender and $self->interfaces->belong($if, $sender);
 
     $message ||= _DISCOVER_PACKET;
 
@@ -124,9 +111,9 @@ method _send_direct ( Object $client, Object $announcement ) {
 method _send_broadcast ( Object $announcement ) {
   x error => 'sending broadcast not implemented';
 
-  #for my $if ( $self->_interfaces->all ) {
+  #for my $if ( $self->interfaces->all ) {
   #  # Don't send to interface with IP in same range as sender of packet
-  #  next if $self->_interfaces->belong( $if, $announcement->sender_address );
+  #  next if $self->interfaces->belong( $if, $announcement->sender_address );
   #  my $message;
   #  if ( $proxy ) {
   #    $message = $announcement->rewrite( $if->address, $proxy->listener_port );
@@ -143,7 +130,7 @@ method _send_broadcast ( Object $announcement ) {
 # We have set up a listener for a remote location. Announce it's presence.
 #
 method _send_announcement ( Object $announcement ) {
-  #my $sock = $self->_socket;
+  #my $sock = $self->socket;
 
   # Send first to all known client waiting for announcements
   $self->_send_direct( $_, $announcement ) for $self->_clients->all;
@@ -167,7 +154,7 @@ sub _process_announcement {
   # locally; DLNA server usually only announce themselves on one interface
   # so reannoucne on remaining interfaces.
   #
-  for my $if ( $self->_interfaces->all ) {
+  for my $if ( $self->interfaces->all ) {
     next unless $announcement->location_address eq $if->address;
     # IP is local - check for port
     for my $pr ( $self->_servers->proxies ) {
@@ -180,7 +167,7 @@ sub _process_announcement {
 
   # Find out if location is on any local subnet
   # TODO: For now just resend announcement. But it seems we have to proxy.
-  #if ( ! $self->_interfaces->direct($message->location_address) ) {
+  #if ( ! $self->interfaces->direct($message->location_address) ) {
   #  $self->_send_announcement( $message );
   #  return;
   #}
@@ -248,7 +235,7 @@ sub _start {
 
   x trace => "session starting";
 
-  my $socket = $self->_socket;
+  my $socket = $self->socket;
   $socket->mcast_add(_MCAST_GROUP) or die $!;
 
   # With the session started, tell kernel to call "read" sub
@@ -272,10 +259,10 @@ method _build__session {
   ) or die $!;
 }
 
-method BUILD {
+method start {
   $self->_session;
 
-  #POE::Kernel->run();
+  POE::Kernel->run();
 }
 
 __PACKAGE__->meta->make_immutable;
