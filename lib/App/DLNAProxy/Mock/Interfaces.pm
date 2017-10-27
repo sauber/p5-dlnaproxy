@@ -17,6 +17,9 @@ sub netmask      { shift->{netmask}      }
 
 package App::DLNAProxy::Mock::Interfaces;
 
+use App::DLNAProxy::Interfaces;
+our @ISA = qw(App::DLNAProxy::Interfaces);
+
 sub new {
   my $class = shift;
   my $data = shift;
