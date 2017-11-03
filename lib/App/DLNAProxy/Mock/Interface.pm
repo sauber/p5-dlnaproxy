@@ -5,6 +5,8 @@ package App::DLNAProxy::Mock::Interface;
 use Moo;
 use namespace::clean;
 
+with ('App::DLNAProxy::Interface');
+
 # Required input
 has name         => ( is=>'ro', required=>1 );
 has is_multicast => ( is=>'ro', required=>1 );
@@ -34,28 +36,6 @@ sub receive {
 sub fetch {
   my $self = shift;
   shift @{ $self->_incoming };
-}
-
-
-########################################################################
-
-# Mock package to present list of mock interfaces
-
-package App::DLNAProxy::Mock::Interfaces;
-
-use App::DLNAProxy::Interfaces;
-use App::DLNAProxy::Mock::Interface;
-our @ISA = qw(App::DLNAProxy::Interfaces);
-
-sub new {
-  my $class = shift;
-  my $array = shift;
-  return bless $array, $class;
-}
-
-sub interfaces {
-  my $self = shift;
-  map App::DLNAProxy::Mock::Interface->new($_), @$self;
 }
 
 1;

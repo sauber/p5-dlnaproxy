@@ -1,31 +1,54 @@
 #!perl -T
 
+use strict;
 use Test::More;
 
 use_ok( 'App::DLNAProxy::Mock::Medium' );
 use_ok( 'App::DLNAProxy::Mock::Timer' );
 use_ok( 'App::DLNAProxy::Usecases' );
 
-my $medium = new_ok 'App::DLNAProxy::Mock::Medium', [];
+my $medium = new_ok 'App::DLNAProxy::Mock::Medium', [interfaces=>[
+  { name=>'eth0',  is_multicast=>1, address=>'5.1.30.1', netmask=>'255.255.255.224' },
+  { name=>'wlan1', is_multicast=>1, address=>'5.1.40.2', netmask=>'255.255.255.192' },
+  { name=>'tun2',  is_multicast=>1, address=>'5.1.50.3', netmask=>'255.255.255.128' },
+]];
 
 my $api = new_ok 'App::DLNAProxy::Usecases', [
   discovery_interval => 2,
-  medium => $medium,
-  timer  => App::DLNAProxy::Mock::Timer->new,
+  medium             => $medium,
+  timer              => App::DLNAProxy::Mock::Timer->new,
 ];
+
+# Find matching messages in interface buffers
+#
+sub _inspect {
+  my($body, $buffername) = @_;
+  my $bufname = "_$buffername";
+  return {
+    map { $_->name => [
+      grep { $_->body eq $body }
+      @{ $_->$bufname() }
+    ] }
+    @{$medium->interfaces}
+  };
+}
 
 ### Discovery
 
-# Discovery is sent regularly
-ok $api->regular_discovery(), 'Setup regular discovery';
-is @{ $medium->packets }, 2, 'There are two packets in discovery';
-is $medium->packets->[-1], $medium->discovery_packet, 'Packets are discovery format';
+# Discovery is sent regularly on all interfaces
+ok $api->start_discovery(), 'Setup regular discovery';
+
+# Since this is fake medium, there should be two packets on each interface
+my $result = _inspect('search', 'outgoing');
+while ( my($if,$messages) = each %$result ) {
+  is @{$messages}, 2, "Two packets on $if";
+}
 
 # Discovery is redistributed
 # TODO: Distinguish specific interfaces
-ok $api->read_discovery, 'Setup reader for when packets are received';
-ok $medium->read( "Discovery" ), 'Receive a discovery packet';
-is $medium->packets->[-1], 'Discovery', 'Received packet is resent';
+#ok $api->read_discovery, 'Setup reader for when packets are received';
+#ok $medium->read( "Discovery" ), 'Receive a discovery packet';
+#is $medium->packets->[-1], 'Discovery', 'Received packet is resent';
 
 # Announcements spawn proxies and rewrite
 # Proxies expire if not renewed
