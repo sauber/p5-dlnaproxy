@@ -1,11 +1,11 @@
 package App::DLNAProxy::Usecases;
 
 use Moo;
-use namespace::clean;
 use App::DLNAProxy::Message;
+use namespace::clean;
 
-has medium => ( is=>'ro', required=>1 );
-has timer  => ( is=>'ro', required=>1 );
+has interfaces         => ( is=>'ro', required=>1 );
+has timer              => ( is=>'ro', required=>1 );
 has discovery_interval => ( is=>'ro', default=>900 );
 
 # Discovery messages are sent regularly
@@ -13,9 +13,15 @@ has discovery_interval => ( is=>'ro', default=>900 );
 sub start_discovery {
   my $self = shift;
 
-  my $message = App::DLNAProxy::Message->new(body=>"search");
-  my $callback = sub { $self->medium->broadcast($message) };
-  $self->timer->timed( $self->discovery_interval, $callback );
+  $self->timer->timed(
+    $self->discovery_interval,
+    sub {
+      my $message = App::DLNAProxy::Message->new(body=>"search");
+      for my $if ( @{$self->interfaces->interfaces} ) {
+        $if->send($message);
+      }
+    }
+  );
 }
 
 # When discovery is received, resend to all other interfaces
@@ -25,8 +31,11 @@ sub read_discovery {
 
   # Closure to handle incoming packets
   my $callback = sub {
-    my $packet = shift;
-    $self->medium->distribute( $packet );
+    my $message = shift;
+    for my $if ( @{$self->interfaces->interfaces} ) {
+      next if $if->name eq $message->if->name;
+      $if->send($message);
+    }
   };
 
   # Register handler in medium

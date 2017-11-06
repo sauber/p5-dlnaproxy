@@ -3,11 +3,11 @@
 use strict;
 use Test::More;
 
-use_ok( 'App::DLNAProxy::Mock::Medium' );
+use_ok( 'App::DLNAProxy::Mock::Interfaces' );
 use_ok( 'App::DLNAProxy::Mock::Timer' );
 use_ok( 'App::DLNAProxy::Usecases' );
 
-my $medium = new_ok 'App::DLNAProxy::Mock::Medium', [interfaces=>[
+my $interfaces = new_ok 'App::DLNAProxy::Mock::Interfaces', [interfaces=>[
   { name=>'eth0',  is_multicast=>1, address=>'5.1.30.1', netmask=>'255.255.255.224' },
   { name=>'wlan1', is_multicast=>1, address=>'5.1.40.2', netmask=>'255.255.255.192' },
   { name=>'tun2',  is_multicast=>1, address=>'5.1.50.3', netmask=>'255.255.255.128' },
@@ -15,7 +15,7 @@ my $medium = new_ok 'App::DLNAProxy::Mock::Medium', [interfaces=>[
 
 my $api = new_ok 'App::DLNAProxy::Usecases', [
   discovery_interval => 2,
-  medium             => $medium,
+  interfaces         => $interfaces,
   timer              => App::DLNAProxy::Mock::Timer->new,
 ];
 
@@ -29,7 +29,7 @@ sub _inspect {
       grep { $_->body eq $body }
       @{ $_->$bufname() }
     ] }
-    @{$medium->interfaces}
+    @{$interfaces->interfaces}
   };
 }
 
