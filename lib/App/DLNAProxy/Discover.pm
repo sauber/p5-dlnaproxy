@@ -36,7 +36,7 @@ MX: 3
 sub x { App::DLNAProxy::Log->log(@_) }
 
 has socket     => ( is=>'ro', required=>1, isa=>'IO::Socket::Multicast' );
-has interfaces => ( is=>'ro', required=>1, isa=>'App::DLNAProxy::Medium' );
+has interfaces => ( is=>'ro', required=>1, isa=>'App::DLNAProxy::Interfaces' );
 
 # A list of clients in discovery
 #

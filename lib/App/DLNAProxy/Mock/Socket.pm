@@ -1,23 +1,22 @@
 package App::DLNAProxy::Mock::Socket;
 
-#$INC{'IO/Socket/Multicast.pm'} = 1;
-use IO::Socket::Multicast;
-our @ISA = qw(IO::Socket::Multicast);
+use Moo;
+extends 'App::DLNAProxy::Socket';
+use namespace::clean;
 
-sub new {
-  return bless {}, shift;
-}
+has LocalPort => ( is=>'ro', required=>1 );
+has ReuseAddr => ( is=>'ro', required=>1 );
 
 sub mcast_if {
-  my($self, $if) = @_;
+  my($self, $ifname) = @_;
 }
 
 sub mcast_send {
-  my($self, $if) = @_;
+  my($self, $message, $destination) = @_;
 }
 
 sub mcast_add {
-  my($self, $if) = @_;
+  my($self, $group) = @_;
 }
 
 1;
