@@ -3,19 +3,23 @@
 use strict;
 use Test::More;
 
-use_ok( 'App::DLNAProxy::Mock::Interfaces' );
 use_ok( 'App::DLNAProxy::Mock::Timer' );
 use_ok( 'App::DLNAProxy::Usecases' );
 
+use_ok( 'App::DLNAProxy::Mock::Interfaces' );
 my $interfaces = new_ok 'App::DLNAProxy::Mock::Interfaces', [interfaces=>[
   { name=>'eth0',  is_multicast=>1, address=>'5.1.30.1', netmask=>'255.255.255.224' },
   { name=>'wlan1', is_multicast=>1, address=>'5.1.40.2', netmask=>'255.255.255.192' },
   { name=>'tun2',  is_multicast=>1, address=>'5.1.50.3', netmask=>'255.255.255.128' },
 ]];
 
+use_ok( 'App::DLNAProxy::Mock::Socket' );
+my $socket = new_ok 'App::DLNAProxy::Mock::Socket', [ LocalPort=>1900, ReuseAddr=>1, interfaces=>$interfaces ];
+
 my $api = new_ok 'App::DLNAProxy::Usecases', [
   discovery_interval => 2,
   interfaces         => $interfaces,
+  socket             => $socket,
   timer              => App::DLNAProxy::Mock::Timer->new,
 ];
 
@@ -41,8 +45,13 @@ ok $api->start_discovery(), 'Setup regular discovery';
 # Since this is fake medium, there should be two packets on each interface
 my $result = _inspect('search', 'outgoing');
 while ( my($if,$messages) = each %$result ) {
-  is @{$messages}, 2, "Two packets on $if";
+  is @$messages, 2, "Two packets on $if";
+  # The messages should be multicast
+  for my $msg ( @$messages ) {
+    ok $msg->is_multicast, "Message is multicast";
+  }
 }
+
 
 # Discovery is redistributed
 # TODO: Distinguish specific interfaces
