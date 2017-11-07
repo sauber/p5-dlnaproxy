@@ -18,7 +18,7 @@ my $socket = new_ok 'App::DLNAProxy::Mock::Socket', [ LocalPort=>1900, ReuseAddr
 
 my $api = new_ok 'App::DLNAProxy::Usecases', [
   discovery_interval => 2,
-  interfaces         => $interfaces,
+#  interfaces         => $interfaces,
   socket             => $socket,
   timer              => App::DLNAProxy::Mock::Timer->new,
 ];
